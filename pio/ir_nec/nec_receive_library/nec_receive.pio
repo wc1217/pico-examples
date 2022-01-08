@@ -25,20 +25,36 @@
 .wrap_target
 
 next_burst:
-    set X, BURST_LOOP_COUNTER
+    set X, BURST_LOOP_COUNTER                   ; 设置x=30
     wait 0 pin 0                                ; wait for the next burst to start
+    jmp burst_loop                              ; 等待pin0=0, 9ms进入， 等4.5ms走完
+
+repeat:
+    nop [ BURST_LOOP_COUNTER - 1 ]
+    nop [ BIT_SAMPLE_DELAY - 2 ]                ; 等45个时钟, 45*0.5625ms/10 == 2.53125ms
+    jmp pin next_burst                          ; 如果还是高电平表示是4.5ms
+    nop [ 2 ]
+    jmp pin repeat_bit                          ; 还是高电平则表示是重复位
+    jmp next_burst
+
+repeat_bit:
+    set X, 1                                    ; 返回1
+    in X, 32                                    ; 表示重复码
+    mov ISR, NULL
+    jmp next_burst
 
 burst_loop:
-    jmp pin data_bit                            ; the burst ended before the counter expired
-    jmp X-- burst_loop                          ; wait for the burst to end
+    jmp pin data_bit                            ; the burst ended before the counter expired, pin=1时跳转至data_bit
+    jmp X-- burst_loop                          ; wait for the burst to end, x-1后为1则跳转回loop,3个526us没有高电平，(eg: 9ms)则重新开始
 
                                                 ; the counter expired - this is a sync burst
     mov ISR, NULL                               ; reset the Input Shift Register
-    wait 1 pin 0                                ; wait for the sync burst to finish
-    jmp next_burst                              ; wait for the first data bit
+    wait 1 pin 0                                ; wait for the sync burst to finish，等一个高电平, 4.5ms
+                                                ; 如果高电平时间约等于2.25ms，表示重复码
+    jmp repeat                                  ; wait for the first data bit, 跳转至下一个回合，等待开始码
 
 data_bit:
-    nop [ BIT_SAMPLE_DELAY - 1 ]                ; wait for 1.5 burst periods before sampling the bit value
+    nop [ BIT_SAMPLE_DELAY - 1 ]                ; wait for 1.5 burst periods before sampling the bit value, 等待1.5个526us
     in PINS, 1                                  ; if the next burst has started then detect a '0' (short gap)
                                                 ; otherwise detect a '1' (long gap)
                                                 ; after 32 bits the ISR will autopush to the receive FIFO
@@ -81,8 +97,9 @@ static inline void nec_receive_program_init (PIO pio, uint sm, uint offset, uint
     sm_config_set_jmp_pin (&c, pin);
 
     // Set the clock divider to 10 ticks per 562.5us burst period
-    //
-    float div = clock_get_hz (clk_sys) / (10.0 / 526.6e-6);
+    // 125000000 / (10.0 / 526.6e-6) = 6582.5
+    // 125000000 * (526.6e-6)  / 10, 每526.5us十次
+    float div = clock_get_hz (clk_sys) / (10.0 / 562.5e-6);
     sm_config_set_clkdiv (&c, div);
 
     // Apply the configuration to the state machine
